@@ -1,8 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "pnpm --filter @pharmacy/web build",
+  "buildCommand": "cd ../.. && pnpm install && cd apps/web && pnpm build",
   "outputDirectory": ".next",
-  "installCommand": "pnpm install",
+  "installCommand": "cd ../.. && pnpm install",
   "framework": "nextjs",
   "rootDirectory": "apps/web"
 }
