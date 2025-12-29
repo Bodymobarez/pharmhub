@@ -1,0 +1,530 @@
+// Pharmacy Hub - Multi-Tenant Database Schema
+// نظام إدارة الصيدليات المتكامل
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ==========================================
+// ENUMS
+// ==========================================
+
+enum UserRole {
+  SUPER_ADMIN      // مدير النظام الرئيسي
+  PHARMACY_OWNER   // صاحب الصيدلية
+  PHARMACY_MANAGER // مدير الصيدلية
+  PHARMACY_EMPLOYEE // موظف الصيدلية
+  CASHIER          // كاشير
+}
+
+enum TenantStatus {
+  PENDING   // في انتظار الموافقة
+  ACTIVE    // نشط
+  SUSPENDED // موقوف
+  CANCELLED // ملغي
+}
+
+enum SubscriptionPlan {
+  FREE      // مجاني (تجريبي)
+  BASIC     // أساسي
+  PRO       // احترافي
+  ENTERPRISE // مؤسسات
+}
+
+enum ProductType {
+  MEDICINE       // دواء
+  COSMETIC       // مستحضر تجميل
+  SUPPLEMENT     // مكمل غذائي
+  MEDICAL_DEVICE // جهاز طبي
+  OTHER          // أخرى
+}
+
+enum SaleStatus {
+  PENDING   // معلق
+  COMPLETED // مكتمل
+  REFUNDED  // مسترد
+  CANCELLED // ملغي
+}
+
+enum PaymentMethod {
+  CASH        // نقدي
+  CARD        // بطاقة
+  MOBILE_WALLET // محفظة إلكترونية
+  CREDIT      // آجل
+}
+
+enum PurchaseOrderStatus {
+  DRAFT     // مسودة
+  PENDING   // في الانتظار
+  APPROVED  // موافق عليه
+  RECEIVED  // تم الاستلام
+  CANCELLED // ملغي
+}
+
+enum StockMovementType {
+  IN          // إدخال
+  OUT         // إخراج
+  ADJUSTMENT  // تعديل
+  TRANSFER    // تحويل
+  RETURN      // مرتجع
+  EXPIRED     // منتهي الصلاحية
+}
+
+// ==========================================
+// MULTI-TENANT MODELS
+// ==========================================
+
+/// الصيدليات/المستأجرين
+model Tenant {
+  id          String       @id @default(cuid())
+  name        String       // اسم الصيدلية
+  nameAr      String?      // الاسم بالعربي
+  slug        String       @unique // رابط فريد
+  logo        String?      // شعار الصيدلية
+  email       String
+  phone       String
+  address     String
+  city        String
+  governorate String?
+  postalCode  String?
+  taxNumber   String?      // رقم التسجيل الضريبي
+  licenseNumber String?    // رقم الترخيص
+  
+  status      TenantStatus     @default(PENDING)
+  plan        SubscriptionPlan @default(FREE)
+  planExpiresAt DateTime?
+  
+  settings    Json?        // إعدادات إضافية
+  
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  
+  // Relations
+  users       User[]
+  products    Product[]
+  categories  Category[]
+  inventories Inventory[]
+  sales       Sale[]
+  customers   Customer[]
+  suppliers   Supplier[]
+  purchaseOrders PurchaseOrder[]
+  
+  @@index([status])
+  @@index([plan])
+}
+
+/// المستخدمين
+model User {
+  id          String   @id @default(cuid())
+  username    String   @unique
+  email       String?  @unique
+  password    String
+  name        String
+  phone       String?
+  avatar      String?
+  
+  role        UserRole @default(PHARMACY_EMPLOYEE)
+  isActive    Boolean  @default(true)
+  
+  tenantId    String?
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  permissions Json?    // صلاحيات مخصصة
+  
+  lastLoginAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relations
+  sales       Sale[]
+  stockMovements StockMovement[]
+  
+  @@index([tenantId])
+  @@index([role])
+  @@index([username])
+}
+
+// ==========================================
+// PRODUCT & INVENTORY MODELS
+// ==========================================
+
+/// فئات المنتجات
+model Category {
+  id          String   @id @default(cuid())
+  name        String
+  nameAr      String?
+  description String?
+  icon        String?
+  parentId    String?
+  parent      Category? @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children    Category[] @relation("CategoryHierarchy")
+  
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  products    Product[]
+  
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+/// المنتجات/الأدوية
+model Product {
+  id              String      @id @default(cuid())
+  name            String
+  nameAr          String?
+  description     String?
+  barcode         String?
+  sku             String?     // Stock Keeping Unit
+  
+  type            ProductType @default(MEDICINE)
+  
+  // تفاصيل الدواء
+  genericName     String?     // الاسم العلمي
+  manufacturer    String?     // الشركة المصنعة
+  activeIngredient String?    // المادة الفعالة
+  dosageForm      String?     // الشكل الدوائي
+  strength        String?     // التركيز
+  
+  // التسعير
+  costPrice       Float       // سعر الشراء
+  sellingPrice    Float       // سعر البيع
+  minSellingPrice Float?      // أقل سعر بيع
+  
+  // الضرائب
+  taxRate         Float       @default(0)
+  isVatExempt     Boolean     @default(false)
+  
+  // المخزون
+  minStockLevel   Int         @default(10)
+  maxStockLevel   Int?
+  reorderLevel    Int         @default(20)
+  
+  // معلومات إضافية
+  requiresPrescription Boolean @default(false)
+  isControlled    Boolean     @default(false) // أدوية مراقبة
+  storageConditions String?
+  
+  image           String?
+  images          String[]
+  
+  isActive        Boolean     @default(true)
+  
+  categoryId      String?
+  category        Category?   @relation(fields: [categoryId], references: [id])
+  
+  tenantId        String
+  tenant          Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  
+  // Relations
+  inventoryItems  InventoryItem[]
+  saleItems       SaleItem[]
+  purchaseOrderItems PurchaseOrderItem[]
+  stockMovements  StockMovement[]
+  
+  @@unique([tenantId, barcode])
+  @@unique([tenantId, sku])
+  @@index([tenantId])
+  @@index([barcode])
+  @@index([name])
+  @@index([type])
+}
+
+/// المخازن
+model Inventory {
+  id          String   @id @default(cuid())
+  name        String
+  nameAr      String?
+  location    String?
+  description String?
+  isDefault   Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  items       InventoryItem[]
+  stockMovementsFrom StockMovement[] @relation("FromInventory")
+  stockMovementsTo   StockMovement[] @relation("ToInventory")
+  
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+/// عناصر المخزون (الكميات والصلاحية)
+model InventoryItem {
+  id          String   @id @default(cuid())
+  
+  quantity    Int      @default(0)
+  batchNumber String?  // رقم التشغيلة
+  expiryDate  DateTime? // تاريخ الصلاحية
+  
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  
+  inventoryId String
+  inventory   Inventory @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@unique([productId, inventoryId, batchNumber])
+  @@index([productId])
+  @@index([inventoryId])
+  @@index([expiryDate])
+}
+
+/// حركات المخزون
+model StockMovement {
+  id          String   @id @default(cuid())
+  
+  type        StockMovementType
+  quantity    Int
+  reason      String?
+  reference   String?  // رقم مرجعي (فاتورة، طلب شراء، إلخ)
+  notes       String?
+  
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+  
+  fromInventoryId String?
+  fromInventory   Inventory? @relation("FromInventory", fields: [fromInventoryId], references: [id])
+  
+  toInventoryId   String?
+  toInventory     Inventory? @relation("ToInventory", fields: [toInventoryId], references: [id])
+  
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  
+  createdAt   DateTime @default(now())
+  
+  @@index([productId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+// ==========================================
+// SALES MODELS
+// ==========================================
+
+/// العملاء
+model Customer {
+  id          String   @id @default(cuid())
+  name        String
+  phone       String?
+  email       String?
+  address     String?
+  
+  // الرصيد الآجل
+  creditLimit Float    @default(0)
+  balance     Float    @default(0)
+  
+  notes       String?
+  isActive    Boolean  @default(true)
+  
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  sales       Sale[]
+  
+  @@index([tenantId])
+  @@index([phone])
+}
+
+/// المبيعات/الفواتير
+model Sale {
+  id              String   @id @default(cuid())
+  invoiceNumber   String   // رقم الفاتورة
+  
+  subtotal        Float    // المجموع الفرعي
+  taxAmount       Float    @default(0) // الضريبة
+  discountAmount  Float    @default(0) // الخصم
+  total           Float    // الإجمالي
+  
+  paidAmount      Float    @default(0) // المدفوع
+  changeAmount    Float    @default(0) // الباقي
+  
+  status          SaleStatus    @default(COMPLETED)
+  paymentMethod   PaymentMethod @default(CASH)
+  
+  prescriptionNumber String? // رقم الروشتة
+  doctorName      String?
+  notes           String?
+  
+  customerId      String?
+  customer        Customer? @relation(fields: [customerId], references: [id])
+  
+  userId          String
+  user            User     @relation(fields: [userId], references: [id])
+  
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  items           SaleItem[]
+  
+  @@unique([tenantId, invoiceNumber])
+  @@index([tenantId])
+  @@index([createdAt])
+  @@index([status])
+}
+
+/// عناصر الفاتورة
+model SaleItem {
+  id          String   @id @default(cuid())
+  
+  quantity    Int
+  unitPrice   Float    // سعر الوحدة
+  discount    Float    @default(0) // خصم على الصنف
+  total       Float    // الإجمالي
+  
+  batchNumber String?  // رقم التشغيلة المباعة
+  expiryDate  DateTime?
+  
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+  
+  saleId      String
+  sale        Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+  
+  @@index([saleId])
+  @@index([productId])
+}
+
+// ==========================================
+// PURCHASE & SUPPLIER MODELS
+// ==========================================
+
+/// الموردين
+model Supplier {
+  id          String   @id @default(cuid())
+  name        String
+  contactPerson String?
+  phone       String?
+  email       String?
+  address     String?
+  taxNumber   String?
+  
+  paymentTerms String? // شروط الدفع
+  notes       String?
+  isActive    Boolean  @default(true)
+  
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  purchaseOrders PurchaseOrder[]
+  
+  @@index([tenantId])
+}
+
+/// طلبات الشراء
+model PurchaseOrder {
+  id              String   @id @default(cuid())
+  orderNumber     String
+  
+  subtotal        Float
+  taxAmount       Float    @default(0)
+  discountAmount  Float    @default(0)
+  total           Float
+  
+  status          PurchaseOrderStatus @default(DRAFT)
+  
+  expectedDate    DateTime?
+  receivedDate    DateTime?
+  notes           String?
+  
+  supplierId      String
+  supplier        Supplier @relation(fields: [supplierId], references: [id])
+  
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  items           PurchaseOrderItem[]
+  
+  @@unique([tenantId, orderNumber])
+  @@index([tenantId])
+  @@index([status])
+}
+
+/// عناصر طلب الشراء
+model PurchaseOrderItem {
+  id              String   @id @default(cuid())
+  
+  quantity        Int      // الكمية المطلوبة
+  receivedQuantity Int     @default(0) // الكمية المستلمة
+  unitPrice       Float
+  total           Float
+  
+  batchNumber     String?
+  expiryDate      DateTime?
+  
+  productId       String
+  product         Product  @relation(fields: [productId], references: [id])
+  
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime @default(now())
+  
+  @@index([purchaseOrderId])
+  @@index([productId])
+}
+
+// ==========================================
+// AUDIT & SYSTEM MODELS
+// ==========================================
+
+/// سجل النظام
+model AuditLog {
+  id          String   @id @default(cuid())
+  
+  action      String   // الإجراء (create, update, delete)
+  entity      String   // الكيان (Product, Sale, etc)
+  entityId    String
+  
+  oldData     Json?
+  newData     Json?
+  
+  userId      String?
+  userEmail   String?
+  ipAddress   String?
+  userAgent   String?
+  
+  tenantId    String?
+  
+  createdAt   DateTime @default(now())
+  
+  @@index([entity, entityId])
+  @@index([userId])
+  @@index([tenantId])
+  @@index([createdAt])
+}
+
